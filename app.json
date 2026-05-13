@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "PiLink 알림",
+    "slug": "pilink-notify",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "android": {
+      "package": "com.pilink.notify",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "backgroundColor": "#7c3aed"
+      }
+    },
+    "plugins": [
+      "expo-notifications"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b7e3696c-d2d6-4822-924d-03ce5b6384b5"
+      }
+    },
+    "owner": "sergekang"
+  }
+}
