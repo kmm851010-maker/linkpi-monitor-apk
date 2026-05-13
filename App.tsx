@@ -1,13 +1,74 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator,
+  StyleSheet, Alert, ActivityIndicator, Switch, ScrollView, Image, SafeAreaView, Modal,
 } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import * as Device from 'expo-device'
+import * as Updates from 'expo-updates'
 import Constants from 'expo-constants'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { StatusBar } from 'expo-status-bar'
+import { WebView } from 'react-native-webview'
+import { Audio } from 'expo-av'
+
+const SOUND_COUNT = 10
+
+const SOUND_FILES: Record<string, any> = {
+  '1':  require('./assets/sounds/sound_1.mp3'),
+  '2':  require('./assets/sounds/sound_2.mp3'),
+  '3':  require('./assets/sounds/sound_3.mp3'),
+  '4':  require('./assets/sounds/sound_4.mp3'),
+  '5':  require('./assets/sounds/sound_5.mp3'),
+  '6':  require('./assets/sounds/sound_6.mp3'),
+  '7':  require('./assets/sounds/sound_7.mp3'),
+  '8':  require('./assets/sounds/sound_8.mp3'),
+  '9':  require('./assets/sounds/sound_9.mp3'),
+  '10': require('./assets/sounds/sound_10.mp3'),
+}
+
+async function setupNotificationChannels() {
+  await Notifications.setNotificationChannelAsync('sound-default', {
+    name: '기본 알림음',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: true,
+    vibrationPattern: [0, 250, 250, 250],
+  })
+  for (let i = 1; i <= SOUND_COUNT; i++) {
+    await Notifications.setNotificationChannelAsync(`sound-${i}`, {
+      name: `알림음 ${i}`,
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: `sound_${i}.mp3`,
+      vibrationPattern: [0, 250, 250, 250],
+    })
+  }
+}
+
+const NOTIFICATION_TYPES = [
+  { key: 'node_offline',     label: '노드 오프라인',  desc: 'PC 꺼짐 / 앱 종료 감지' },
+  { key: 'node_online',      label: '노드 재접속',    desc: '노드 복구 시' },
+  { key: 'process_critical', label: '프로세스 이상',  desc: '프로세스 중단 감지' },
+  { key: 'process_warning',  label: '프로세스 경고',  desc: '프로세스 불안정' },
+  { key: 'process_recovery', label: '프로세스 복구',  desc: '프로세스 정상화' },
+  { key: 'port_critical',    label: '포트 이상',      desc: '포트 전체 차단' },
+  { key: 'port_recovery',    label: '포트 복구',      desc: '포트 정상화' },
+]
+
+type Prefs = Record<string, boolean>
+const DEFAULT_PREFS: Prefs = Object.fromEntries(NOTIFICATION_TYPES.map(t => [t.key, true]))
+const API = 'https://pilink.vercel.app'
+
+function compareVersion(a: string, b: string): number {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0)
+  }
+  return 0
+}
+
+const RANK_MEDAL = ['#f59e0b', '#9ca3af', '#f97316', '#6b7280', '#6b7280']
+const RANK_EMOJI = ['🥇', '🥈', '🥉']
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -17,33 +78,129 @@ Notifications.setNotificationHandler({
   }),
 })
 
-const API = 'https://pilink.vercel.app'
+interface Notice { id: string; title: string; nickname: string; created_at: string }
+interface NodeEvent { id: string; event_type: string; severity: string; message: string; created_at: string }
+interface RankEntry { rank: number; nickname: string; total_likes: number }
+
+const SEVERITY_COLOR: Record<string, string> = {
+  critical: '#ef4444', warning: '#f59e0b', recovery: '#10b981', info: '#3b82f6',
+}
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: '위험', warning: '경고', recovery: '복구', info: '정보',
+}
+
+function timeAgo(iso: string): string {
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (diff < 60) return '방금 전'
+  if (diff < 3600) return `${Math.floor(diff / 60)}분 전`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`
+  return `${Math.floor(diff / 86400)}일 전`
+}
 
 export default function App() {
-  const [username, setUsername] = useState('')
+  const [webUrl, setWebUrl]         = useState<string | null>(null)
+  const [username, setUsername]     = useState('')
   const [registered, setRegistered] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  const [prefs, setPrefs]           = useState<Prefs>(DEFAULT_PREFS)
+  const [sound, setSound]           = useState('default')
+  const [showSoundModal, setShowSoundModal] = useState(false)
+  const [loading, setLoading]       = useState(true)
+  const [saving, setSaving]         = useState(false)
+  const [notices, setNotices]       = useState<Notice[]>([])
+  const [rankings, setRankings]     = useState<RankEntry[]>([])
+  const [weekLabel, setWeekLabel]   = useState('')
+  const [recentEvents, setRecentEvents] = useState<NodeEvent[]>([])
 
   useEffect(() => {
-    AsyncStorage.getItem('registered_uid').then(uid => {
+    setupNotificationChannels()
+
+    Promise.all([
+      AsyncStorage.getItem('registered_uid'),
+      AsyncStorage.getItem('notification_prefs'),
+      AsyncStorage.getItem('notification_sound'),
+    ]).then(([uid, savedPrefs, savedSound]) => {
       setRegistered(uid)
+      if (savedPrefs) setPrefs({ ...DEFAULT_PREFS, ...JSON.parse(savedPrefs) })
+      if (savedSound) setSound(savedSound)
       setLoading(false)
     })
+
+    if (!__DEV__) {
+      Updates.checkForUpdateAsync().then(({ isAvailable }) => {
+        if (isAvailable) {
+          Updates.fetchUpdateAsync().then(() => {
+            Alert.alert('업데이트 완료', '새 버전이 적용됐습니다. 앱을 재시작합니다.',
+              [{ text: '확인', onPress: () => Updates.reloadAsync() }])
+          }).catch(() => {})
+        }
+      }).catch(() => {})
+    }
+
+    fetch(`${API}/api/app-version`)
+      .then(r => r.json())
+      .then(({ minimum, apk_url }) => {
+        const current = Constants.expoConfig?.version ?? '0.0.0'
+        if (compareVersion(current, minimum) < 0) {
+          Alert.alert(
+            '새 버전 출시',
+            'LinkPiMonitor 새 버전이 출시됐습니다.\n아래 링크에서 최신 APK를 다운받아 설치해주세요.',
+            [
+              { text: '나중에' },
+              { text: '다운로드', onPress: () => require('react-native').Linking.openURL(apk_url) },
+            ]
+          )
+        }
+      })
+      .catch(() => {})
+
+    fetch(`${API}/api/posts?type=notice&limit=5`)
+      .then(r => r.json())
+      .then(d => setNotices(d.data ?? []))
+      .catch(() => {})
+
+    fetch(`${API}/api/rankings`)
+      .then(r => r.json())
+      .then(d => {
+        setRankings((d.data ?? []).slice(0, 5))
+        if (d.weekStart) {
+          const start = new Date(d.weekStart)
+          const end   = new Date(start.getTime() + 6 * 86400000)
+          const fmt   = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`
+          setWeekLabel(`${fmt(start)} ~ ${fmt(end)}`)
+        }
+      })
+      .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    if (!registered) { setRecentEvents([]); return }
+    fetch(`${API}/api/node-events?pi_uid=${encodeURIComponent(registered)}&limit=3&offset=0`)
+      .then(r => r.json())
+      .then(d => setRecentEvents(d.data ?? []))
+      .catch(() => {})
+  }, [registered])
+
+  const savePrefs = useCallback(async (newPrefs: Prefs, uid: string, newSound?: string) => {
+    await AsyncStorage.setItem('notification_prefs', JSON.stringify(newPrefs))
+    const merged = { ...newPrefs, sound: newSound ?? sound }
+    await fetch(`${API}/api/expo-push/prefs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pi_uid: uid, prefs: merged }),
+    }).catch(() => {})
+  }, [sound])
+
+  const togglePref = (key: string) => {
+    if (!registered) return
+    const newPrefs = { ...prefs, [key]: !prefs[key] }
+    setPrefs(newPrefs)
+    savePrefs(newPrefs, registered)
+  }
+
   const register = async () => {
-    if (!username.trim()) {
-      Alert.alert('오류', 'Pi 사용자명을 입력해주세요.')
-      return
-    }
-    if (!Device.isDevice) {
-      Alert.alert('오류', '실제 기기에서만 사용 가능합니다.')
-      return
-    }
-
+    if (!username.trim()) { Alert.alert('오류', 'Pi 사용자명을 입력해주세요.'); return }
+    if (!Device.isDevice) { Alert.alert('오류', '실제 기기에서만 사용 가능합니다.'); return }
     setSaving(true)
-
     const { status: existing } = await Notifications.getPermissionsAsync()
     let finalStatus = existing
     if (existing !== 'granted') {
@@ -52,42 +209,35 @@ export default function App() {
     }
     if (finalStatus !== 'granted') {
       Alert.alert('권한 필요', '설정에서 알림 권한을 허용해주세요.')
-      setSaving(false)
-      return
+      setSaving(false); return
     }
-
     try {
       const projectId = Constants.expoConfig?.extra?.eas?.projectId as string | undefined
-      const tokenData = await Notifications.getExpoPushTokenAsync(
-        projectId ? { projectId } : undefined
-      )
-
+      const tokenData = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
       const res = await fetch(`${API}/api/expo-push/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pi_uid: username.trim(), token: tokenData.data }),
+        body: JSON.stringify({ pi_uid: username.trim(), token: tokenData.data, prefs: { ...prefs, sound } }),
       })
-
-      if (!res.ok) throw new Error('서버 오류')
-
+      if (!res.ok) throw new Error()
       await AsyncStorage.setItem('registered_uid', username.trim())
       setRegistered(username.trim())
     } catch {
       Alert.alert('오류', '등록에 실패했습니다. 다시 시도해주세요.')
     }
-
     setSaving(false)
   }
 
   const unregister = async () => {
-    await AsyncStorage.removeItem('registered_uid')
+    await AsyncStorage.multiRemove(['registered_uid', 'notification_prefs'])
     setRegistered(null)
     setUsername('')
+    setPrefs(DEFAULT_PREFS)
   }
 
   if (loading) {
     return (
-      <View style={styles.container}>
+      <View style={styles.center}>
         <ActivityIndicator size="large" color="#7c3aed" />
         <StatusBar style="auto" />
       </View>
@@ -95,79 +245,265 @@ export default function App() {
   }
 
   return (
-    <View style={styles.container}>
-      <StatusBar style="auto" />
-      <Text style={styles.emoji}>🔔</Text>
-      <Text style={styles.title}>PiLink 알림</Text>
-      <Text style={styles.subtitle}>노드 이상 알림을 실시간으로 받으세요</Text>
+    <SafeAreaView style={styles.root}>
+      <StatusBar style="light" backgroundColor="#7c3aed" />
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
 
-      {registered ? (
-        <View style={styles.card}>
-          <Text style={styles.successText}>✅ 알림 등록 완료</Text>
-          <Text style={styles.successSub}>@{registered}</Text>
-          <Text style={styles.desc}>노드 이상 발생 시 즉시 알림이 옵니다</Text>
-          <TouchableOpacity style={styles.outlineButton} onPress={unregister}>
-            <Text style={styles.outlineButtonText}>등록 해제</Text>
-          </TouchableOpacity>
+        <View style={styles.header}>
+          <Image source={require('./assets/icon.png')} style={styles.headerIcon} />
+          <Text style={styles.logoText}>LinkPi</Text>
+          <Text style={styles.logoSub}>파이 노드 운영자 커뮤니티</Text>
         </View>
-      ) : (
+
         <View style={styles.card}>
-          <Text style={styles.label}>Pi 사용자명</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="예: doosanprince"
-            placeholderTextColor="#9ca3af"
-            value={username}
-            onChangeText={setUsername}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <TouchableOpacity
-            style={[styles.button, saving && styles.buttonDisabled]}
-            onPress={register}
-            disabled={saving}
-          >
-            {saving
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.buttonText}>알림 등록</Text>
-            }
-          </TouchableOpacity>
+          <Text style={styles.cardTitle}>🔔 노드 알림</Text>
+          {registered ? (
+            <>
+              <Text style={styles.successText}>✅ 알림 등록 완료</Text>
+              <Text style={styles.successSub}>@{registered}</Text>
+              <TouchableOpacity style={styles.outlineButton} onPress={unregister}>
+                <Text style={styles.outlineButtonText}>등록 해제</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Text style={styles.label}>Pi 사용자명</Text>
+              <Text style={styles.inputHint}>파이 앱 프로필의 @뒤 영문 아이디를 입력하세요</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="예: username"
+                placeholderTextColor="#9ca3af"
+                value={username}
+                onChangeText={setUsername}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity
+                style={[styles.button, saving && { opacity: 0.6 }]}
+                onPress={register}
+                disabled={saving}
+              >
+                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>알림 등록</Text>}
+              </TouchableOpacity>
+            </>
+          )}
         </View>
-      )}
-    </View>
+
+        {registered && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>⚙️ 알림 설정</Text>
+            {NOTIFICATION_TYPES.map((type, i) => (
+              <View key={type.key} style={[styles.row, i < NOTIFICATION_TYPES.length - 1 && styles.rowBorder]}>
+                <View style={styles.rowText}>
+                  <Text style={styles.rowLabel}>{type.label}</Text>
+                  <Text style={styles.rowDesc}>{type.desc}</Text>
+                </View>
+                <Switch
+                  value={prefs[type.key] ?? true}
+                  onValueChange={() => togglePref(type.key)}
+                  trackColor={{ false: '#d1d5db', true: '#a78bfa' }}
+                  thumbColor={prefs[type.key] ? '#7c3aed' : '#f4f3f4'}
+                />
+              </View>
+            ))}
+          </View>
+        )}
+
+        {registered && (
+          <TouchableOpacity style={styles.card} onPress={() => setShowSoundModal(true)} activeOpacity={0.7}>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle}>🔔 알림음 선택</Text>
+              <Text style={styles.changeBtnText}>변경 ›</Text>
+            </View>
+            <Text style={styles.currentSoundText}>
+              현재: {sound === 'default' ? '기본 알림음 (시스템)' : `알림음 ${sound}`}
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {registered && recentEvents.length > 0 && (
+          <View style={styles.card}>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle}>⚠️ 최근 노드 알림</Text>
+            </View>
+            {recentEvents.map((e, i) => (
+              <View key={e.id} style={[styles.eventRow, i < recentEvents.length - 1 && styles.rowBorder]}>
+                <View style={[styles.severityBadge, { backgroundColor: SEVERITY_COLOR[e.severity] ?? '#9ca3af' }]}>
+                  <Text style={styles.severityText}>{SEVERITY_LABEL[e.severity] ?? e.severity}</Text>
+                </View>
+                <View style={styles.eventContent}>
+                  <Text style={styles.eventMessage} numberOfLines={1}>{e.message}</Text>
+                  <Text style={styles.eventTime}>{timeAgo(e.created_at)}</Text>
+                </View>
+              </View>
+            ))}
+            <TouchableOpacity style={styles.piLinkBanner} onPress={() => setWebUrl(API)}>
+              <Text style={styles.piLinkBannerText}>📊 가동률 · 전체 이슈 내역은 파이브라우저 LinkPi에서 확인 →</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {notices.length > 0 && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>📢 공지사항</Text>
+            {notices.map((notice, i) => (
+              <TouchableOpacity key={notice.id} style={[styles.noticeRow, i < notices.length - 1 && styles.rowBorder]} onPress={() => setWebUrl(`${API}`)}>
+                <Text style={styles.noticeTitle} numberOfLines={2}>{notice.title}</Text>
+                <Text style={styles.noticeMeta}>@{notice.nickname} · {timeAgo(notice.created_at)}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {rankings.length > 0 && (
+          <TouchableOpacity style={styles.card} onPress={() => setWebUrl(`${API}`)}>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle}>🏆 이번 주 랭킹</Text>
+              {weekLabel ? <Text style={styles.weekLabel}>{weekLabel}</Text> : null}
+            </View>
+            {rankings.map((entry, i) => (
+              <View key={entry.nickname + i} style={[styles.rankRow, i < rankings.length - 1 && styles.rowBorder]}>
+                <View style={[styles.rankBadge, { backgroundColor: RANK_MEDAL[i] + '22' }]}>
+                  <Text style={[styles.rankBadgeText, { color: RANK_MEDAL[i] }]}>
+                    {i < 3 ? RANK_EMOJI[i] : `${i + 1}`}
+                  </Text>
+                </View>
+                <Text style={styles.rankNickname} numberOfLines={1}>@{entry.nickname}</Text>
+                <View style={styles.rankLikes}>
+                  <Text style={styles.rankLikesText}>❤️ {entry.total_likes}</Text>
+                </View>
+              </View>
+            ))}
+          </TouchableOpacity>
+        )}
+
+        <View style={{ height: 8 }} />
+      </ScrollView>
+
+      <Modal visible={showSoundModal} animationType="slide" transparent onRequestClose={() => setShowSoundModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>알림음 선택</Text>
+              <TouchableOpacity onPress={() => setShowSoundModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              {(['default', ...Array.from({ length: SOUND_COUNT }, (_, i) => String(i + 1))]).map(s => (
+                <View key={s} style={[styles.soundItem, sound === s && styles.soundItemActive]}>
+                  <TouchableOpacity
+                    style={styles.soundItemLabel}
+                    onPress={() => {
+                      setSound(s)
+                      AsyncStorage.setItem('notification_sound', s)
+                      if (registered) savePrefs(prefs, registered, s)
+                    }}
+                  >
+                    <Text style={[styles.soundItemText, sound === s && { color: '#7c3aed', fontWeight: '700' }]}>
+                      {s === 'default' ? '기본 알림음 (시스템)' : `알림음 ${s}`}
+                    </Text>
+                    {sound === s && <Text style={styles.soundItemCheck}>✓</Text>}
+                  </TouchableOpacity>
+                  {s !== 'default' && (
+                    <TouchableOpacity
+                      style={styles.previewBtn}
+                      onPress={async () => {
+                        if (!SOUND_FILES[s]) return
+                        try {
+                          const { sound: audioObj } = await Audio.Sound.createAsync(SOUND_FILES[s])
+                          await audioObj.playAsync()
+                          audioObj.setOnPlaybackStatusUpdate(status => {
+                            if ('didJustFinish' in status && status.didJustFinish) audioObj.unloadAsync()
+                          })
+                        } catch {}
+                      }}
+                    >
+                      <Text style={styles.previewBtnText}>▶ 미리듣기</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+              <View style={{ height: 16 }} />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!webUrl} animationType="slide" onRequestClose={() => setWebUrl(null)}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#7c3aed' }}>
+          <View style={styles.webHeader}>
+            <Text style={styles.webHeaderTitle}>LinkPi</Text>
+            <TouchableOpacity onPress={() => setWebUrl(null)} style={styles.webCloseBtn}>
+              <Text style={styles.webCloseText}>✕ 닫기</Text>
+            </TouchableOpacity>
+          </View>
+          {webUrl && <WebView source={{ uri: webUrl }} style={{ flex: 1 }} />}
+        </SafeAreaView>
+      </Modal>
+    </SafeAreaView>
   )
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1, backgroundColor: '#f5f3ff',
-    alignItems: 'center', justifyContent: 'center', padding: 24,
-  },
-  emoji: { fontSize: 52, marginBottom: 8 },
-  title: { fontSize: 26, fontWeight: 'bold', color: '#7c3aed', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#6b7280', marginBottom: 32, textAlign: 'center' },
-  card: {
-    width: '100%', backgroundColor: '#fff', borderRadius: 16, padding: 20,
-    shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 }, elevation: 4,
-  },
-  label: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 8 },
-  input: {
-    borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10,
-    padding: 12, fontSize: 15, marginBottom: 16, color: '#111827',
-  },
-  button: {
-    backgroundColor: '#7c3aed', borderRadius: 10,
-    padding: 14, alignItems: 'center',
-  },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  successText: { fontSize: 18, fontWeight: 'bold', color: '#059669', marginBottom: 4 },
-  successSub: { fontSize: 15, color: '#7c3aed', fontWeight: '600', marginBottom: 8 },
-  desc: { fontSize: 13, color: '#6b7280', marginBottom: 16 },
-  outlineButton: {
-    borderWidth: 1, borderColor: '#d1d5db', borderRadius: 10,
-    padding: 12, alignItems: 'center',
-  },
+  root:              { flex: 1, backgroundColor: '#f5f3ff' },
+  center:            { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#f5f3ff' },
+  scroll:            { padding: 16, paddingTop: 0 },
+  header:            { backgroundColor: '#7c3aed', marginHorizontal: -16, paddingHorizontal: 24, paddingTop: 40, paddingBottom: 24, alignItems: 'center', marginBottom: 16 },
+  headerIcon:        { width: 56, height: 56, borderRadius: 14, marginBottom: 10, borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)' },
+  logoText:          { fontSize: 32, fontWeight: '900', color: '#fff', letterSpacing: 0.5 },
+  logoSub:           { fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
+  card:              { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: '#7c3aed', shadowOpacity: 0.07, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  cardTitle:         { fontSize: 14, fontWeight: '700', color: '#374151', marginBottom: 12 },
+  cardTitleRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  weekLabel:         { fontSize: 11, color: '#9ca3af' },
+  label:             { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 4 },
+  inputHint:         { fontSize: 12, color: '#6b7280', marginBottom: 8 },
+  input:             { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10, padding: 12, fontSize: 15, marginBottom: 14, color: '#111827' },
+  button:            { backgroundColor: '#7c3aed', borderRadius: 10, padding: 14, alignItems: 'center' },
+  buttonText:        { color: '#fff', fontWeight: '700', fontSize: 15 },
+  successText:       { fontSize: 17, fontWeight: 'bold', color: '#059669', marginBottom: 2 },
+  successSub:        { fontSize: 14, color: '#7c3aed', fontWeight: '600', marginBottom: 12 },
+  outlineButton:     { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 10, padding: 11, alignItems: 'center' },
   outlineButtonText: { color: '#6b7280', fontSize: 14 },
+  row:               { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
+  rowBorder:         { borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
+  rowText:           { flex: 1 },
+  rowLabel:          { fontSize: 14, fontWeight: '500', color: '#111827' },
+  rowDesc:           { fontSize: 12, color: '#9ca3af', marginTop: 1 },
+  noticeRow:         { paddingVertical: 10 },
+  noticeTitle:       { fontSize: 14, fontWeight: '500', color: '#111827', lineHeight: 20 },
+  noticeMeta:        { fontSize: 11, color: '#9ca3af', marginTop: 3 },
+  rankRow:           { flexDirection: 'row', alignItems: 'center', paddingVertical: 9 },
+  rankBadge:         { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  rankBadgeText:     { fontSize: 15, fontWeight: '700' },
+  rankNickname:      { flex: 1, fontSize: 14, fontWeight: '500', color: '#111827' },
+  rankLikes:         { backgroundColor: '#fef2f2', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  rankLikesText:     { fontSize: 12, color: '#ef4444', fontWeight: '600' },
+  webHeader:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#7c3aed' },
+  webHeaderTitle:    { fontSize: 18, fontWeight: '900', color: '#fff' },
+  webCloseBtn:       { paddingHorizontal: 10, paddingVertical: 6 },
+  webCloseText:      { color: 'rgba(255,255,255,0.9)', fontSize: 14 },
+  changeBtnText:     { fontSize: 13, color: '#7c3aed', fontWeight: '600' },
+  currentSoundText:  { fontSize: 13, color: '#6b7280' },
+  eventRow:          { flexDirection: 'row', alignItems: 'center', paddingVertical: 9, gap: 10 },
+  severityBadge:     { borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, minWidth: 36, alignItems: 'center' },
+  severityText:      { fontSize: 11, color: '#fff', fontWeight: '700' },
+  eventContent:      { flex: 1 },
+  eventMessage:      { fontSize: 13, color: '#111827' },
+  eventTime:         { fontSize: 11, color: '#9ca3af', marginTop: 1 },
+  piLinkBanner:      { marginTop: 10, backgroundColor: '#f5f3ff', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  piLinkBannerText:  { fontSize: 12, color: '#7c3aed', fontWeight: '600' },
+  modalOverlay:      { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  modalSheet:        { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '80%' },
+  modalHeader:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
+  modalTitle:        { fontSize: 16, fontWeight: '700', color: '#111827' },
+  modalClose:        { fontSize: 18, color: '#9ca3af', fontWeight: '400' },
+  soundItem:         { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#f9fafb' },
+  soundItemActive:   { backgroundColor: '#f5f3ff' },
+  soundItemLabel:    { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  soundItemText:     { fontSize: 15, color: '#374151', flex: 1 },
+  soundItemCheck:    { fontSize: 16, color: '#7c3aed', marginRight: 8 },
+  previewBtn:        { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#ede9fe', borderRadius: 8 },
+  previewBtnText:    { fontSize: 12, color: '#7c3aed', fontWeight: '600' },
 })
