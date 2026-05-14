@@ -106,6 +106,7 @@ export default function App() {
   const [sound, setSound]               = useState('default')
   const [showSoundModal, setShowSoundModal]       = useState(false)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
+  const [showAccountModal, setShowAccountModal]   = useState(false)
   const [loading, setLoading]           = useState(true)
   const [saving, setSaving]             = useState(false)
   const [notices, setNotices]           = useState<Notice[]>([])
@@ -299,24 +300,19 @@ export default function App() {
         <View style={styles.card}>
           <View style={styles.cardTitleRow}>
             <Text style={styles.cardTitle}>🔔 노드 알림 계정</Text>
-            <TouchableOpacity style={styles.addBtn} onPress={() => setShowRegisterModal(true)}>
-              <Text style={styles.addBtnText}>{registeredList.length === 0 ? '계정 등록' : '+ 추가'}</Text>
-            </TouchableOpacity>
-          </View>
-          {registeredList.length === 0 ? (
-            <Text style={styles.emptyHint}>등록된 계정이 없습니다.{'\n'}계정 등록 버튼을 눌러 Pi 사용자명을 추가하세요.</Text>
-          ) : (
-            registeredList.map((uid, i) => (
-              <View key={uid} style={[styles.accountRow, i < registeredList.length - 1 && styles.rowBorder]}>
-                <Text style={styles.accountName}>@{uid}</Text>
-                <TouchableOpacity onPress={() => Alert.alert('등록 해제', `@${uid} 알림 수신을 해제할까요?`, [
-                  { text: '취소', style: 'cancel' },
-                  { text: '해제', style: 'destructive', onPress: () => unregister(uid) },
-                ])}>
-                  <Text style={styles.removeBtn}>해제</Text>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {registeredList.length > 0 && (
+                <TouchableOpacity style={styles.outlineBtn} onPress={() => setShowAccountModal(true)}>
+                  <Text style={styles.outlineBtnText}>등록된 계정 {registeredList.length}개</Text>
                 </TouchableOpacity>
-              </View>
-            ))
+              )}
+              <TouchableOpacity style={styles.addBtn} onPress={() => setShowRegisterModal(true)}>
+                <Text style={styles.addBtnText}>{registeredList.length === 0 ? '계정 등록' : '+ 추가'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          {registeredList.length === 0 && (
+            <Text style={styles.emptyHint}>등록된 계정이 없습니다.{'\n'}계정 등록 버튼을 눌러 Pi 사용자명을 추가하세요.</Text>
           )}
         </View>
 
@@ -379,8 +375,11 @@ export default function App() {
                   <Text style={styles.severityText}>{SEVERITY_LABEL[e.severity] ?? e.severity}</Text>
                 </View>
                 <View style={styles.eventContent}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 1 }}>
+                    <Text style={styles.eventNickname}>@{e.pi_uid}</Text>
+                    <Text style={styles.eventTime}>{timeAgo(e.created_at)}</Text>
+                  </View>
                   <Text style={styles.eventMessage} numberOfLines={1}>{e.message}</Text>
-                  <Text style={styles.eventTime}>{timeAgo(e.created_at)}</Text>
                 </View>
               </View>
             ))}
@@ -419,6 +418,41 @@ export default function App() {
 
         <View style={{ height: 8 }} />
       </ScrollView>
+
+      <Modal visible={showAccountModal} animationType="slide" transparent onRequestClose={() => setShowAccountModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>등록된 계정</Text>
+              <TouchableOpacity onPress={() => setShowAccountModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              {registeredList.map((uid, i) => (
+                <View key={uid} style={[styles.soundItem, i % 2 === 0 ? {} : { backgroundColor: '#fafafa' }]}>
+                  <Text style={[styles.soundItemText, { fontWeight: '600' }]}>@{uid}</Text>
+                  <TouchableOpacity
+                    style={styles.previewBtn}
+                    onPress={() => Alert.alert('등록 해제', `@${uid} 알림 수신을 해제할까요?`, [
+                      { text: '취소', style: 'cancel' },
+                      { text: '해제', style: 'destructive', onPress: () => unregister(uid) },
+                    ])}
+                  >
+                    <Text style={[styles.previewBtnText, { color: '#ef4444' }]}>해제</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <TouchableOpacity
+                style={{ margin: 16, backgroundColor: '#7c3aed', borderRadius: 12, padding: 14, alignItems: 'center' }}
+                onPress={() => { setShowAccountModal(false); setShowRegisterModal(true) }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>+ 계정 추가</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={showRegisterModal} animationType="slide" transparent onRequestClose={() => { setShowRegisterModal(false); setUsername('') }}>
         <View style={styles.modalOverlay}>
@@ -557,10 +591,10 @@ const styles = StyleSheet.create({
   webCloseText:      { color: 'rgba(255,255,255,0.9)', fontSize: 14 },
   addBtn:            { backgroundColor: '#7c3aed', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5 },
   addBtnText:        { color: '#fff', fontSize: 13, fontWeight: '700' },
+  outlineBtn:        { borderWidth: 1, borderColor: '#7c3aed', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  outlineBtnText:    { color: '#7c3aed', fontSize: 12, fontWeight: '600' },
   emptyHint:         { fontSize: 13, color: '#9ca3af', lineHeight: 20 },
-  accountRow:        { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
-  accountName:       { flex: 1, fontSize: 15, fontWeight: '600', color: '#111827' },
-  removeBtn:         { fontSize: 13, color: '#ef4444', fontWeight: '600' },
+  eventNickname:     { fontSize: 11, color: '#7c3aed', fontWeight: '700' },
   toggleAllBtn:      { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
   toggleAllBtnOn:    { borderColor: '#ef4444' },
   toggleAllBtnText:  { fontSize: 12, color: '#6b7280', fontWeight: '600' },
