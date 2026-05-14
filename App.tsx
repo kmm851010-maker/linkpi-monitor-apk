@@ -98,28 +98,38 @@ function timeAgo(iso: string): string {
 }
 
 export default function App() {
-  const [webUrl, setWebUrl]         = useState<string | null>(null)
-  const [username, setUsername]     = useState('')
-  const [registered, setRegistered] = useState<string | null>(null)
-  const [prefs, setPrefs]           = useState<Prefs>(DEFAULT_PREFS)
-  const [sound, setSound]           = useState('default')
-  const [showSoundModal, setShowSoundModal] = useState(false)
-  const [loading, setLoading]       = useState(true)
-  const [saving, setSaving]         = useState(false)
-  const [notices, setNotices]       = useState<Notice[]>([])
-  const [rankings, setRankings]     = useState<RankEntry[]>([])
-  const [weekLabel, setWeekLabel]   = useState('')
+  const [webUrl, setWebUrl]             = useState<string | null>(null)
+  const [username, setUsername]         = useState('')
+  const [registeredList, setRegisteredList] = useState<string[]>([])
+  const [expoToken, setExpoToken]       = useState<string | null>(null)
+  const [prefs, setPrefs]               = useState<Prefs>(DEFAULT_PREFS)
+  const [sound, setSound]               = useState('default')
+  const [showSoundModal, setShowSoundModal]       = useState(false)
+  const [showRegisterModal, setShowRegisterModal] = useState(false)
+  const [loading, setLoading]           = useState(true)
+  const [saving, setSaving]             = useState(false)
+  const [notices, setNotices]           = useState<Notice[]>([])
+  const [rankings, setRankings]         = useState<RankEntry[]>([])
+  const [weekLabel, setWeekLabel]       = useState('')
   const [recentEvents, setRecentEvents] = useState<NodeEvent[]>([])
 
   useEffect(() => {
     setupNotificationChannels()
 
     Promise.all([
-      AsyncStorage.getItem('registered_uid'),
+      AsyncStorage.getItem('registered_uids'),
+      AsyncStorage.getItem('registered_uid'), // 구버전 마이그레이션
       AsyncStorage.getItem('notification_prefs'),
       AsyncStorage.getItem('notification_sound'),
-    ]).then(([uid, savedPrefs, savedSound]) => {
-      setRegistered(uid)
+    ]).then(([uids, oldUid, savedPrefs, savedSound]) => {
+      if (uids) {
+        setRegisteredList(JSON.parse(uids))
+      } else if (oldUid) {
+        const migrated = [oldUid]
+        setRegisteredList(migrated)
+        AsyncStorage.setItem('registered_uids', JSON.stringify(migrated))
+        AsyncStorage.removeItem('registered_uid')
+      }
       if (savedPrefs) setPrefs({ ...DEFAULT_PREFS, ...JSON.parse(savedPrefs) })
       if (savedSound) setSound(savedSound)
       setLoading(false)
@@ -173,34 +183,45 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!registered) { setRecentEvents([]); return }
-    fetch(`${API}/api/node-events?pi_uid=${encodeURIComponent(registered)}&limit=3&offset=0`)
-      .then(r => r.json())
-      .then(d => setRecentEvents(d.data ?? []))
-      .catch(() => {})
-  }, [registered])
+    if (registeredList.length === 0) { setRecentEvents([]); return }
+    Promise.all(
+      registeredList.map(uid =>
+        fetch(`${API}/api/node-events?pi_uid=${encodeURIComponent(uid)}&limit=3&offset=0`)
+          .then(r => r.json())
+          .then(d => d.data ?? [])
+          .catch(() => [])
+      )
+    ).then(results => {
+      const merged = (results.flat() as NodeEvent[])
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 3)
+      setRecentEvents(merged)
+    })
+  }, [registeredList])
 
-  const savePrefs = useCallback(async (newPrefs: Prefs, uid: string, newSound?: string) => {
+  const savePrefs = useCallback(async (newPrefs: Prefs, newSound?: string) => {
     await AsyncStorage.setItem('notification_prefs', JSON.stringify(newPrefs))
     const merged = { ...newPrefs, sound: newSound ?? sound }
-    await fetch(`${API}/api/expo-push/prefs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pi_uid: uid, prefs: merged }),
-    }).catch(() => {})
-  }, [sound])
+    await Promise.all(
+      registeredList.map(uid =>
+        fetch(`${API}/api/expo-push/prefs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pi_uid: uid, prefs: merged }),
+        }).catch(() => {})
+      )
+    )
+  }, [sound, registeredList])
 
   const togglePref = (key: string) => {
-    if (!registered) return
+    if (registeredList.length === 0) return
     const newPrefs = { ...prefs, [key]: !prefs[key] }
     setPrefs(newPrefs)
-    savePrefs(newPrefs, registered)
+    savePrefs(newPrefs)
   }
 
-  const register = async () => {
-    if (!username.trim()) { Alert.alert('오류', 'Pi 사용자명을 입력해주세요.'); return }
-    if (!Device.isDevice) { Alert.alert('오류', '실제 기기에서만 사용 가능합니다.'); return }
-    setSaving(true)
+  const getOrFetchToken = async (): Promise<string | null> => {
+    if (expoToken) return expoToken
     const { status: existing } = await Notifications.getPermissionsAsync()
     let finalStatus = existing
     if (existing !== 'granted') {
@@ -209,30 +230,50 @@ export default function App() {
     }
     if (finalStatus !== 'granted') {
       Alert.alert('권한 필요', '설정에서 알림 권한을 허용해주세요.')
-      setSaving(false); return
+      return null
     }
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId as string | undefined
+    const tokenData = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
+    setExpoToken(tokenData.data)
+    return tokenData.data
+  }
+
+  const register = async () => {
+    const uid = username.trim()
+    if (!uid) { Alert.alert('오류', 'Pi 사용자명을 입력해주세요.'); return }
+    if (registeredList.includes(uid)) { Alert.alert('이미 등록됨', `@${uid}는 이미 등록된 계정입니다.`); return }
+    if (!Device.isDevice) { Alert.alert('오류', '실제 기기에서만 사용 가능합니다.'); return }
+    setSaving(true)
     try {
-      const projectId = Constants.expoConfig?.extra?.eas?.projectId as string | undefined
-      const tokenData = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
+      const token = await getOrFetchToken()
+      if (!token) { setSaving(false); return }
       const res = await fetch(`${API}/api/expo-push/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pi_uid: username.trim(), token: tokenData.data, prefs: { ...prefs, sound } }),
+        body: JSON.stringify({ pi_uid: uid, token, prefs: { ...prefs, sound } }),
       })
       if (!res.ok) throw new Error()
-      await AsyncStorage.setItem('registered_uid', username.trim())
-      setRegistered(username.trim())
+      const newList = [...registeredList, uid]
+      await AsyncStorage.setItem('registered_uids', JSON.stringify(newList))
+      setRegisteredList(newList)
+      setUsername('')
     } catch {
       Alert.alert('오류', '등록에 실패했습니다. 다시 시도해주세요.')
     }
     setSaving(false)
   }
 
-  const unregister = async () => {
-    await AsyncStorage.multiRemove(['registered_uid', 'notification_prefs'])
-    setRegistered(null)
-    setUsername('')
-    setPrefs(DEFAULT_PREFS)
+  const unregister = async (uid: string) => {
+    if (expoToken) {
+      await fetch(`${API}/api/expo-push/register`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pi_uid: uid, token: expoToken }),
+      }).catch(() => {})
+    }
+    const newList = registeredList.filter(u => u !== uid)
+    await AsyncStorage.setItem('registered_uids', JSON.stringify(newList))
+    setRegisteredList(newList)
   }
 
   if (loading) {
@@ -256,46 +297,36 @@ export default function App() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>🔔 노드 알림</Text>
-          {registered ? (
-            <>
-              <Text style={styles.successText}>✅ 알림 등록 완료</Text>
-              <Text style={styles.successSub}>@{registered}</Text>
-              <TouchableOpacity style={styles.outlineButton} onPress={unregister}>
-                <Text style={styles.outlineButtonText}>등록 해제</Text>
-              </TouchableOpacity>
-            </>
+          <View style={styles.cardTitleRow}>
+            <Text style={styles.cardTitle}>🔔 노드 알림 계정</Text>
+            <TouchableOpacity style={styles.addBtn} onPress={() => setShowRegisterModal(true)}>
+              <Text style={styles.addBtnText}>{registeredList.length === 0 ? '계정 등록' : '+ 추가'}</Text>
+            </TouchableOpacity>
+          </View>
+          {registeredList.length === 0 ? (
+            <Text style={styles.emptyHint}>등록된 계정이 없습니다.{'\n'}계정 등록 버튼을 눌러 Pi 사용자명을 추가하세요.</Text>
           ) : (
-            <>
-              <Text style={styles.label}>Pi 사용자명</Text>
-              <Text style={styles.inputHint}>파이 앱 프로필의 @뒤 영문 아이디를 입력하세요</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="예: username"
-                placeholderTextColor="#9ca3af"
-                value={username}
-                onChangeText={setUsername}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity
-                style={[styles.button, saving && { opacity: 0.6 }]}
-                onPress={register}
-                disabled={saving}
-              >
-                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>알림 등록</Text>}
-              </TouchableOpacity>
-            </>
+            registeredList.map((uid, i) => (
+              <View key={uid} style={[styles.accountRow, i < registeredList.length - 1 && styles.rowBorder]}>
+                <Text style={styles.accountName}>@{uid}</Text>
+                <TouchableOpacity onPress={() => Alert.alert('등록 해제', `@${uid} 알림 수신을 해제할까요?`, [
+                  { text: '취소', style: 'cancel' },
+                  { text: '해제', style: 'destructive', onPress: () => unregister(uid) },
+                ])}>
+                  <Text style={styles.removeBtn}>해제</Text>
+                </TouchableOpacity>
+              </View>
+            ))
           )}
         </View>
 
-        {registered && (() => {
+        {registeredList.length > 0 && (() => {
           const allOn = NOTIFICATION_TYPES.every(t => prefs[t.key] ?? true)
           const toggleAll = () => {
             const newVal = !allOn
             const newPrefs = Object.fromEntries(NOTIFICATION_TYPES.map(t => [t.key, newVal])) as Prefs
             setPrefs(newPrefs)
-            savePrefs(newPrefs, registered)
+            savePrefs(newPrefs)
           }
           return (
             <View style={styles.card}>
@@ -325,7 +356,7 @@ export default function App() {
           )
         })()}
 
-        {registered && (
+        {registeredList.length > 0 && (
           <TouchableOpacity style={styles.card} onPress={() => setShowSoundModal(true)} activeOpacity={0.7}>
             <View style={styles.cardTitleRow}>
               <Text style={styles.cardTitle}>🔔 알림음 선택</Text>
@@ -337,7 +368,7 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {registered && recentEvents.length > 0 && (
+        {registeredList.length > 0 && recentEvents.length > 0 && (
           <View style={styles.card}>
             <View style={styles.cardTitleRow}>
               <Text style={styles.cardTitle}>⚠️ 최근 노드 알림</Text>
@@ -389,6 +420,37 @@ export default function App() {
         <View style={{ height: 8 }} />
       </ScrollView>
 
+      <Modal visible={showRegisterModal} animationType="slide" transparent onRequestClose={() => { setShowRegisterModal(false); setUsername('') }}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, { padding: 20 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>알림 계정 등록</Text>
+              <TouchableOpacity onPress={() => { setShowRegisterModal(false); setUsername('') }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.inputHint}>파이 앱 프로필의 @뒤 영문 아이디를 입력하세요</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="예: username"
+              placeholderTextColor="#9ca3af"
+              value={username}
+              onChangeText={setUsername}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+            />
+            <TouchableOpacity
+              style={[styles.button, saving && { opacity: 0.6 }]}
+              onPress={async () => { await register(); if (!saving) setShowRegisterModal(false) }}
+              disabled={saving}
+            >
+              {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>등록</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={showSoundModal} animationType="slide" transparent onRequestClose={() => setShowSoundModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
@@ -406,7 +468,7 @@ export default function App() {
                     onPress={() => {
                       setSound(s)
                       AsyncStorage.setItem('notification_sound', s)
-                      if (registered) savePrefs(prefs, registered, s)
+                      savePrefs(prefs, s)
                     }}
                   >
                     <Text style={[styles.soundItemText, sound === s && { color: '#7c3aed', fontWeight: '700' }]}>
@@ -493,6 +555,12 @@ const styles = StyleSheet.create({
   webHeaderTitle:    { fontSize: 18, fontWeight: '900', color: '#fff' },
   webCloseBtn:       { paddingHorizontal: 10, paddingVertical: 6 },
   webCloseText:      { color: 'rgba(255,255,255,0.9)', fontSize: 14 },
+  addBtn:            { backgroundColor: '#7c3aed', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5 },
+  addBtnText:        { color: '#fff', fontSize: 13, fontWeight: '700' },
+  emptyHint:         { fontSize: 13, color: '#9ca3af', lineHeight: 20 },
+  accountRow:        { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
+  accountName:       { flex: 1, fontSize: 15, fontWeight: '600', color: '#111827' },
+  removeBtn:         { fontSize: 13, color: '#ef4444', fontWeight: '600' },
   toggleAllBtn:      { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
   toggleAllBtnOn:    { borderColor: '#ef4444' },
   toggleAllBtnText:  { fontSize: 12, color: '#6b7280', fontWeight: '600' },
