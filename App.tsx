@@ -80,7 +80,7 @@ Notifications.setNotificationHandler({
 })
 
 interface Notice { id: string; title: string; nickname: string; created_at: string }
-interface NodeEvent { id: string; event_type: string; severity: string; message: string; created_at: string }
+interface NodeEvent { id: string; pi_uid: string; event_type: string; severity: string; message: string; created_at: string }
 interface RankEntry { rank: number; nickname: string; total_likes: number }
 
 const SEVERITY_COLOR: Record<string, string> = {
@@ -88,6 +88,12 @@ const SEVERITY_COLOR: Record<string, string> = {
 }
 const SEVERITY_LABEL: Record<string, string> = {
   critical: '위험', warning: '경고', recovery: '복구', info: '정보',
+}
+
+function formatDateTime(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function timeAgo(iso: string): string {
@@ -114,6 +120,7 @@ export default function App() {
   const [rankings, setRankings]         = useState<RankEntry[]>([])
   const [weekLabel, setWeekLabel]       = useState('')
   const [recentEvents, setRecentEvents] = useState<NodeEvent[]>([])
+  const [showEventModal, setShowEventModal] = useState(false)
 
   useEffect(() => {
     setupNotificationChannels()
@@ -188,7 +195,7 @@ export default function App() {
     if (registeredList.length === 0) { setRecentEvents([]); return }
     Promise.all(
       registeredList.map(uid =>
-        fetch(`${API}/api/node-events?pi_uid=${encodeURIComponent(uid)}&limit=3&offset=0`)
+        fetch(`${API}/api/node-events?pi_uid=${encodeURIComponent(uid)}&limit=100&offset=0`)
           .then(r => r.json())
           .then(d => d.data ?? [])
           .catch(() => [])
@@ -196,7 +203,7 @@ export default function App() {
     ).then(results => {
       const merged = (results.flat() as NodeEvent[])
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, 3)
+        .slice(0, 100)
       setRecentEvents(merged)
     })
   }, [registeredList])
@@ -373,16 +380,19 @@ export default function App() {
           <View style={styles.card}>
             <View style={styles.cardTitleRow}>
               <Text style={styles.cardTitle}>⚠️ 최근 노드 알림</Text>
+              <TouchableOpacity onPress={() => setShowEventModal(true)}>
+                <Text style={styles.changeBtnText}>전체 {recentEvents.length}개 보기 ›</Text>
+              </TouchableOpacity>
             </View>
-            {recentEvents.map((e, i) => (
-              <View key={e.id} style={[styles.eventRow, i < recentEvents.length - 1 && styles.rowBorder]}>
+            {recentEvents.slice(0, 3).map((e, i) => (
+              <View key={e.id} style={[styles.eventRow, i < Math.min(recentEvents.length, 3) - 1 && styles.rowBorder]}>
                 <View style={[styles.severityBadge, { backgroundColor: SEVERITY_COLOR[e.severity] ?? '#9ca3af' }]}>
                   <Text style={styles.severityText}>{SEVERITY_LABEL[e.severity] ?? e.severity}</Text>
                 </View>
                 <View style={styles.eventContent}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 1 }}>
                     <Text style={styles.eventNickname}>@{e.pi_uid}</Text>
-                    <Text style={styles.eventTime}>{timeAgo(e.created_at)}</Text>
+                    <Text style={styles.eventTime}>{formatDateTime(e.created_at)}</Text>
                   </View>
                   <Text style={styles.eventMessage} numberOfLines={1}>{e.message}</Text>
                 </View>
@@ -547,6 +557,38 @@ export default function App() {
               ))}
               <View style={{ height: 16 }} />
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showEventModal} animationType="slide" transparent onRequestClose={() => setShowEventModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>노드 알림 내역 ({recentEvents.length}개)</Text>
+              <TouchableOpacity onPress={() => setShowEventModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={recentEvents}
+              keyExtractor={e => e.id}
+              renderItem={({ item: e, index: i }) => (
+                <View style={[styles.eventRow, { paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' }]}>
+                  <View style={[styles.severityBadge, { backgroundColor: SEVERITY_COLOR[e.severity] ?? '#9ca3af' }]}>
+                    <Text style={styles.severityText}>{SEVERITY_LABEL[e.severity] ?? e.severity}</Text>
+                  </View>
+                  <View style={styles.eventContent}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 1 }}>
+                      <Text style={styles.eventNickname}>@{e.pi_uid}</Text>
+                      <Text style={styles.eventTime}>{formatDateTime(e.created_at)}</Text>
+                    </View>
+                    <Text style={styles.eventMessage} numberOfLines={2}>{e.message}</Text>
+                  </View>
+                </View>
+              )}
+              ListFooterComponent={<View style={{ height: 24 }} />}
+            />
           </View>
         </View>
       </Modal>
