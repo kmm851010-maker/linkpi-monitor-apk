@@ -289,25 +289,41 @@ export default function App() {
           )}
         </View>
 
-        {registered && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>⚙️ 알림 설정</Text>
-            {NOTIFICATION_TYPES.map((type, i) => (
-              <View key={type.key} style={[styles.row, i < NOTIFICATION_TYPES.length - 1 && styles.rowBorder]}>
-                <View style={styles.rowText}>
-                  <Text style={styles.rowLabel}>{type.label}</Text>
-                  <Text style={styles.rowDesc}>{type.desc}</Text>
-                </View>
-                <Switch
-                  value={prefs[type.key] ?? true}
-                  onValueChange={() => togglePref(type.key)}
-                  trackColor={{ false: '#d1d5db', true: '#a78bfa' }}
-                  thumbColor={prefs[type.key] ? '#7c3aed' : '#f4f3f4'}
-                />
+        {registered && (() => {
+          const allOn = NOTIFICATION_TYPES.every(t => prefs[t.key] ?? true)
+          const toggleAll = () => {
+            const newVal = !allOn
+            const newPrefs = Object.fromEntries(NOTIFICATION_TYPES.map(t => [t.key, newVal])) as Prefs
+            setPrefs(newPrefs)
+            savePrefs(newPrefs, registered)
+          }
+          return (
+            <View style={styles.card}>
+              <View style={styles.cardTitleRow}>
+                <Text style={styles.cardTitle}>⚙️ 알림 설정</Text>
+                <TouchableOpacity onPress={toggleAll} style={[styles.toggleAllBtn, allOn && styles.toggleAllBtnOn]}>
+                  <Text style={[styles.toggleAllBtnText, allOn && styles.toggleAllBtnTextOn]}>
+                    {allOn ? '전체 끄기' : '전체 켜기'}
+                  </Text>
+                </TouchableOpacity>
               </View>
-            ))}
-          </View>
-        )}
+              {NOTIFICATION_TYPES.map((type, i) => (
+                <View key={type.key} style={[styles.row, i < NOTIFICATION_TYPES.length - 1 && styles.rowBorder]}>
+                  <View style={styles.rowText}>
+                    <Text style={styles.rowLabel}>{type.label}</Text>
+                    <Text style={styles.rowDesc}>{type.desc}</Text>
+                  </View>
+                  <Switch
+                    value={prefs[type.key] ?? true}
+                    onValueChange={() => togglePref(type.key)}
+                    trackColor={{ false: '#d1d5db', true: '#a78bfa' }}
+                    thumbColor={prefs[type.key] ? '#7c3aed' : '#f4f3f4'}
+                  />
+                </View>
+              ))}
+            </View>
+          )
+        })()}
 
         {registered && (
           <TouchableOpacity style={styles.card} onPress={() => setShowSoundModal(true)} activeOpacity={0.7}>
@@ -355,27 +371,20 @@ export default function App() {
           </View>
         )}
 
-        {rankings.length > 0 && (
-          <TouchableOpacity style={styles.card} onPress={() => setWebUrl(`${API}`)}>
-            <View style={styles.cardTitleRow}>
-              <Text style={styles.cardTitle}>🏆 이번 주 랭킹</Text>
-              {weekLabel ? <Text style={styles.weekLabel}>{weekLabel}</Text> : null}
-            </View>
-            {rankings.map((entry, i) => (
-              <View key={entry.nickname + i} style={[styles.rankRow, i < rankings.length - 1 && styles.rowBorder]}>
-                <View style={[styles.rankBadge, { backgroundColor: RANK_MEDAL[i] + '22' }]}>
-                  <Text style={[styles.rankBadgeText, { color: RANK_MEDAL[i] }]}>
-                    {i < 3 ? RANK_EMOJI[i] : `${i + 1}`}
-                  </Text>
-                </View>
-                <Text style={styles.rankNickname} numberOfLines={1}>@{entry.nickname}</Text>
-                <View style={styles.rankLikes}>
-                  <Text style={styles.rankLikesText}>❤️ {entry.total_likes}</Text>
-                </View>
-              </View>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>🔗 LinkPi 바로가기</Text>
+          <View style={styles.quickNavRow}>
+            {[
+              { label: '💬 커뮤니티', url: `${API}` },
+              { label: '❓ QnA',      url: `${API}` },
+              { label: '🏆 랭킹확인', url: `${API}` },
+            ].map(item => (
+              <TouchableOpacity key={item.label} style={styles.quickNavBtn} onPress={() => setWebUrl(item.url)}>
+                <Text style={styles.quickNavBtnText}>{item.label}</Text>
+              </TouchableOpacity>
             ))}
-          </TouchableOpacity>
-        )}
+          </View>
+        </View>
 
         <View style={{ height: 8 }} />
       </ScrollView>
@@ -484,6 +493,13 @@ const styles = StyleSheet.create({
   webHeaderTitle:    { fontSize: 18, fontWeight: '900', color: '#fff' },
   webCloseBtn:       { paddingHorizontal: 10, paddingVertical: 6 },
   webCloseText:      { color: 'rgba(255,255,255,0.9)', fontSize: 14 },
+  toggleAllBtn:      { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  toggleAllBtnOn:    { borderColor: '#ef4444' },
+  toggleAllBtnText:  { fontSize: 12, color: '#6b7280', fontWeight: '600' },
+  toggleAllBtnTextOn:{ color: '#ef4444' },
+  quickNavRow:       { flexDirection: 'row', gap: 8 },
+  quickNavBtn:       { flex: 1, backgroundColor: '#f5f3ff', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  quickNavBtnText:   { fontSize: 13, color: '#7c3aed', fontWeight: '600' },
   changeBtnText:     { fontSize: 13, color: '#7c3aed', fontWeight: '600' },
   currentSoundText:  { fontSize: 13, color: '#6b7280' },
   eventRow:          { flexDirection: 'row', alignItems: 'center', paddingVertical: 9, gap: 10 },
