@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator, Switch, ScrollView, Image, SafeAreaView, Modal,
+  StyleSheet, Alert, ActivityIndicator, Switch, ScrollView, FlatList, Image, SafeAreaView, Modal,
 } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import * as Device from 'expo-device'
@@ -13,6 +13,7 @@ import { WebView } from 'react-native-webview'
 import { Audio } from 'expo-av'
 
 const SOUND_COUNT = 10
+const MAX_ACCOUNTS = 10 // 프리미엄 계정은 추후 무제한으로 확장 예정
 
 const SOUND_FILES: Record<string, any> = {
   '1':  require('./assets/sounds/sound_1.mp3'),
@@ -243,6 +244,10 @@ export default function App() {
     const uid = username.trim()
     if (!uid) { Alert.alert('오류', 'Pi 사용자명을 입력해주세요.'); return }
     if (registeredList.includes(uid)) { Alert.alert('이미 등록됨', `@${uid}는 이미 등록된 계정입니다.`); return }
+    if (registeredList.length >= MAX_ACCOUNTS) {
+      Alert.alert('등록 한도 초과', `최대 ${MAX_ACCOUNTS}개까지 등록할 수 있습니다.`)
+      return
+    }
     if (!Device.isDevice) { Alert.alert('오류', '실제 기기에서만 사용 가능합니다.'); return }
     setSaving(true)
     try {
@@ -428,12 +433,16 @@ export default function App() {
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView>
-              {registeredList.map((uid, i) => (
-                <View key={uid} style={[styles.soundItem, i % 2 === 0 ? {} : { backgroundColor: '#fafafa' }]}>
-                  <Text style={[styles.soundItemText, { fontWeight: '600' }]}>@{uid}</Text>
+            <FlatList
+              data={registeredList}
+              keyExtractor={uid => uid}
+              renderItem={({ item: uid, index: i }) => (
+                <View style={[styles.soundItem, i % 2 === 0 ? {} : { backgroundColor: '#fafafa' }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.soundItemText, { fontWeight: '600' }]}>@{uid}</Text>
+                  </View>
                   <TouchableOpacity
-                    style={styles.previewBtn}
+                    style={[styles.previewBtn, { backgroundColor: '#fee2e2' }]}
                     onPress={() => Alert.alert('등록 해제', `@${uid} 알림 수신을 해제할까요?`, [
                       { text: '취소', style: 'cancel' },
                       { text: '해제', style: 'destructive', onPress: () => unregister(uid) },
@@ -442,14 +451,21 @@ export default function App() {
                     <Text style={[styles.previewBtnText, { color: '#ef4444' }]}>해제</Text>
                   </TouchableOpacity>
                 </View>
-              ))}
-              <TouchableOpacity
-                style={{ margin: 16, backgroundColor: '#7c3aed', borderRadius: 12, padding: 14, alignItems: 'center' }}
-                onPress={() => { setShowAccountModal(false); setShowRegisterModal(true) }}
-              >
-                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>+ 계정 추가</Text>
-              </TouchableOpacity>
-            </ScrollView>
+              )}
+              ListFooterComponent={
+                <View>
+                  <Text style={{ textAlign: 'center', fontSize: 12, color: '#9ca3af', marginTop: 8 }}>
+                    {registeredList.length}/{MAX_ACCOUNTS}개 등록됨
+                  </Text>
+                  <TouchableOpacity
+                    style={{ margin: 16, backgroundColor: '#7c3aed', borderRadius: 12, padding: 14, alignItems: 'center', opacity: registeredList.length >= MAX_ACCOUNTS ? 0.4 : 1 }}
+                    onPress={() => { if (registeredList.length < MAX_ACCOUNTS) { setShowAccountModal(false); setShowRegisterModal(true) } else { Alert.alert('등록 한도 초과', `최대 ${MAX_ACCOUNTS}개까지 등록할 수 있습니다.`) } }}
+                  >
+                    <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>+ 계정 추가</Text>
+                  </TouchableOpacity>
+                </View>
+              }
+            />
           </View>
         </View>
       </Modal>
