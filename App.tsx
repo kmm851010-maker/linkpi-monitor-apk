@@ -114,6 +114,8 @@ export default function App() {
   const [showSoundModal, setShowSoundModal]       = useState(false)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
   const [showAccountModal, setShowAccountModal]   = useState(false)
+  const [registerStep, setRegisterStep]           = useState<1 | 2>(1)
+  const [pairCode, setPairCode]                   = useState('')
   const [loading, setLoading]           = useState(true)
   const [saving, setSaving]             = useState(false)
   const [notices, setNotices]           = useState<Notice[]>([])
@@ -247,7 +249,7 @@ export default function App() {
     return tokenData.data
   }
 
-  const register = async () => {
+  const goToStep2 = () => {
     const uid = username.trim()
     if (!uid) { Alert.alert('오류', 'Pi 사용자명을 입력해주세요.'); return }
     if (registeredList.includes(uid)) { Alert.alert('이미 등록됨', `@${uid}는 이미 등록된 계정입니다.`); return }
@@ -255,9 +257,29 @@ export default function App() {
       Alert.alert('등록 한도 초과', `최대 ${MAX_ACCOUNTS}개까지 등록할 수 있습니다.`)
       return
     }
+    setRegisterStep(2)
+  }
+
+  const register = async () => {
+    const uid = username.trim()
+    const code = pairCode.trim()
+    if (!code || code.length !== 6) { Alert.alert('오류', '6자리 연동 코드를 입력해주세요.'); return }
     if (!Device.isDevice) { Alert.alert('오류', '실제 기기에서만 사용 가능합니다.'); return }
     setSaving(true)
     try {
+      // 연동 코드 검증
+      const verifyRes = await fetch(`${API}/api/guardian-pair/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pi_uid: uid, code }),
+      })
+      if (!verifyRes.ok) {
+        const { error } = await verifyRes.json()
+        Alert.alert('연동 실패', error ?? '코드 검증에 실패했습니다.')
+        setSaving(false)
+        return
+      }
+      // 검증 성공 → 토큰 등록
       const token = await getOrFetchToken()
       if (!token) { setSaving(false); return }
       const res = await fetch(`${API}/api/expo-push/register`, {
@@ -270,6 +292,8 @@ export default function App() {
       await AsyncStorage.setItem('registered_uids', JSON.stringify(newList))
       setRegisteredList(newList)
       setUsername('')
+      setPairCode('')
+      setRegisterStep(1)
     } catch {
       Alert.alert('오류', '등록에 실패했습니다. 다시 시도해주세요.')
     }
@@ -480,33 +504,69 @@ export default function App() {
         </View>
       </Modal>
 
-      <Modal visible={showRegisterModal} animationType="slide" transparent onRequestClose={() => { setShowRegisterModal(false); setUsername('') }}>
+      <Modal visible={showRegisterModal} animationType="slide" transparent onRequestClose={() => { setShowRegisterModal(false); setUsername(''); setPairCode(''); setRegisterStep(1) }}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalSheet, { padding: 20 }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>알림 계정 등록</Text>
-              <TouchableOpacity onPress={() => { setShowRegisterModal(false); setUsername('') }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <TouchableOpacity
+                onPress={() => { if (registerStep === 2) { setRegisterStep(1); setPairCode('') } }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ opacity: registerStep === 2 ? 1 : 0 }}
+              >
+                <Text style={{ fontSize: 18, color: '#7c3aed' }}>‹</Text>
+              </TouchableOpacity>
+              <Text style={styles.modalTitle}>
+                {registerStep === 1 ? '알림 계정 등록 (1/2)' : '연동 코드 입력 (2/2)'}
+              </Text>
+              <TouchableOpacity onPress={() => { setShowRegisterModal(false); setUsername(''); setPairCode(''); setRegisterStep(1) }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.inputHint}>파이 앱 프로필의 @뒤 영문 아이디를 입력하세요</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="예: username"
-              placeholderTextColor="#9ca3af"
-              value={username}
-              onChangeText={setUsername}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-            />
-            <TouchableOpacity
-              style={[styles.button, saving && { opacity: 0.6 }]}
-              onPress={async () => { await register(); if (!saving) setShowRegisterModal(false) }}
-              disabled={saving}
-            >
-              {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>등록</Text>}
-            </TouchableOpacity>
+
+            {registerStep === 1 ? (
+              <>
+                <Text style={styles.inputHint}>파이 앱 프로필의 @뒤 영문 아이디를 입력하세요</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="예: username"
+                  placeholderTextColor="#9ca3af"
+                  value={username}
+                  onChangeText={setUsername}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                />
+                <TouchableOpacity style={styles.button} onPress={goToStep2}>
+                  <Text style={styles.buttonText}>다음 →</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <View style={styles.pairGuideBox}>
+                  <Text style={styles.pairGuideTitle}>PC에서 연동 코드 받기</Text>
+                  <Text style={styles.pairGuideStep}>1. PC의 NodeGuardian 트레이 아이콘 우클릭</Text>
+                  <Text style={styles.pairGuideStep}>2. [📱 앱 연동 코드] 클릭</Text>
+                  <Text style={styles.pairGuideStep}>3. 팝업에 표시된 6자리 코드를 아래에 입력</Text>
+                </View>
+                <TextInput
+                  style={[styles.input, { fontSize: 24, textAlign: 'center', letterSpacing: 8, fontWeight: '700' }]}
+                  placeholder="000000"
+                  placeholderTextColor="#d1d5db"
+                  value={pairCode}
+                  onChangeText={t => setPairCode(t.replace(/\D/g, '').slice(0, 6))}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  style={[styles.button, saving && { opacity: 0.6 }]}
+                  onPress={async () => { await register(); }}
+                  disabled={saving}
+                >
+                  {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>등록 완료</Text>}
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -675,6 +735,9 @@ const styles = StyleSheet.create({
   modalHeader:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
   modalTitle:        { fontSize: 16, fontWeight: '700', color: '#111827' },
   modalClose:        { fontSize: 18, color: '#9ca3af', fontWeight: '400' },
+  pairGuideBox:      { backgroundColor: '#f5f3ff', borderRadius: 12, padding: 14, marginBottom: 14 },
+  pairGuideTitle:    { fontSize: 13, fontWeight: '700', color: '#7c3aed', marginBottom: 8 },
+  pairGuideStep:     { fontSize: 12, color: '#374151', lineHeight: 22 },
   soundItem:         { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#f9fafb' },
   soundItemActive:   { backgroundColor: '#f5f3ff' },
   soundItemLabel:    { flex: 1, flexDirection: 'row', alignItems: 'center' },
