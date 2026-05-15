@@ -1,0 +1,13 @@
+# 소스 파일 (APK만 릴리즈로 배포)
+*.tsx
+*.ts
+*.js
+*.json
+!package.json
+node_modules/
+.env
+.env.*
+google-services.json
+GoogleService-Info.plist
+*.keystore
+*.jks
