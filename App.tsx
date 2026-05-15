@@ -301,11 +301,12 @@ export default function App() {
   }
 
   const unregister = async (uid: string) => {
-    if (expoToken) {
+    const token = await getOrFetchToken()
+    if (token) {
       await fetch(`${API}/api/expo-push/register`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pi_uid: uid, token: expoToken }),
+        body: JSON.stringify({ pi_uid: uid, token }),
       }).catch(() => {})
     }
     const newList = registeredList.filter(u => u !== uid)
