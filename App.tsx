@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator, Switch, ScrollView, FlatList, Image, SafeAreaView, Modal,
+  StyleSheet, Alert, ActivityIndicator, Switch, ScrollView, FlatList, Image, SafeAreaView, Modal, RefreshControl,
 } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import * as Device from 'expo-device'
@@ -123,6 +123,7 @@ export default function App() {
   const [weekLabel, setWeekLabel]       = useState('')
   const [recentEvents, setRecentEvents] = useState<NodeEvent[]>([])
   const [showEventModal, setShowEventModal] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     setupNotificationChannels()
@@ -208,6 +209,41 @@ export default function App() {
         .slice(0, 100)
       setRecentEvents(merged)
     })
+  }, [registeredList])
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      await Promise.all([
+        fetch(`${API}/api/posts?type=notice&limit=5`)
+          .then(r => r.json()).then(d => setNotices(d.data ?? [])).catch(() => {}),
+        fetch(`${API}/api/rankings`)
+          .then(r => r.json()).then(d => {
+            setRankings((d.data ?? []).slice(0, 5))
+            if (d.weekStart) {
+              const start = new Date(d.weekStart)
+              const end = new Date(start.getTime() + 6 * 86400000)
+              const fmt = (dt: Date) => `${dt.getMonth() + 1}/${dt.getDate()}`
+              setWeekLabel(`${fmt(start)} ~ ${fmt(end)}`)
+            }
+          }).catch(() => {}),
+        registeredList.length > 0
+          ? Promise.all(
+              registeredList.map(uid =>
+                fetch(`${API}/api/node-events?pi_uid=${encodeURIComponent(uid)}&limit=100&offset=0`)
+                  .then(r => r.json()).then(d => d.data ?? []).catch(() => [])
+              )
+            ).then(results => {
+              const merged = (results.flat() as NodeEvent[])
+                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                .slice(0, 100)
+              setRecentEvents(merged)
+            })
+          : Promise.resolve(),
+      ])
+    } finally {
+      setRefreshing(false)
+    }
   }, [registeredList])
 
   const savePrefs = useCallback(async (newPrefs: Prefs, newSound?: string) => {
@@ -326,7 +362,13 @@ export default function App() {
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar style="light" backgroundColor="#7c3aed" />
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#7c3aed']} tintColor="#7c3aed" />
+        }
+      >
 
         <View style={styles.header}>
           <Image source={require('./assets/icon.png')} style={styles.headerIcon} />
@@ -406,7 +448,7 @@ export default function App() {
             <View style={styles.cardTitleRow}>
               <Text style={styles.cardTitle}>⚠️ 최근 노드 알림</Text>
               <TouchableOpacity onPress={() => setShowEventModal(true)}>
-                <Text style={styles.changeBtnText}>전체 {recentEvents.length}개 보기 ›</Text>
+                <Text style={styles.changeBtnText}>전체 보기 ›</Text>
               </TouchableOpacity>
             </View>
             {recentEvents.slice(0, 3).map((e, i) => (
@@ -626,7 +668,7 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>노드 알림 내역 ({recentEvents.length}개)</Text>
+              <Text style={styles.modalTitle}>노드 알림 내역 (최근 30일)</Text>
               <TouchableOpacity onPress={() => setShowEventModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
